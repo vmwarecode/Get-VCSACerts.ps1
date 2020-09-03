@@ -26,7 +26,7 @@
         Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -unique
     .EXAMPLE
         #use the '-Verbose' option to show connection and retrieval details
-        Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -unique
+        Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -Verbose
     .OUTPUTS
         Array of objects containing certificate data
 #>
