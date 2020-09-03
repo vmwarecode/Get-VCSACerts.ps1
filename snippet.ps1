@@ -12,7 +12,7 @@
         USER MUST BE A VCENTER LOCAL USER (ie, administrator@vsphere.local), AND MUST BE IN SPN FORMAT (ie, user@domain.com)
     .EXAMPLE
         #load function and run
-        . ./Get-STSCerts.ps1
+        . ./Get-VCSACerts.ps1
         Get-STSCerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -password 'VMware1!'
     .EXAMPLE
         #uses an array to pass multiple vcenters to the function
@@ -22,7 +22,10 @@
         #use the '-includeHosts' option to get all host certificates
         Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -includeHosts
     .EXAMPLE
-        #user the '-unique' option to filter duplicate certificates
+        #use the '-unique' option to filter duplicate certificates
+        Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -unique
+    .EXAMPLE
+        #use the '-Verbose' option to show connection and retrieval details
         Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -unique
     .OUTPUTS
         Array of objects containing certificate data
