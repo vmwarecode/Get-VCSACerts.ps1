@@ -1,8 +1,8 @@
 <#
     .NOTES
         Author: Mark McGill, VMware
-        Last Edit: 9-1-2020
-        Version 1.1
+        Last Edit: 9-8-2020
+        Version 1.2
     .SYNOPSIS
         Returns vCenter certificate information for all VCSA certificates, and optionally returns host certs
     .DESCRIPTION
@@ -22,11 +22,11 @@
         #use the '-includeHosts' option to get all host certificates
         Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -includeHosts
     .EXAMPLE
-        #use the '-unique' option to filter duplicate certificates
-        Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -unique
+        #use the '-all' option to include "STSRelyingParty" and "STSTenantTrustedCertificateChain" certificates
+        Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -all
     .EXAMPLE
         #use the '-Verbose' option to show connection and retrieval details
-        Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -Verbose
+            Get-VCSACerts -vcenter "vcenter.domain.com" -user "administrator@vsphere.local" -Verbose
     .OUTPUTS
         Array of objects containing certificate data
 #>
@@ -40,7 +40,7 @@ function Get-VCSACerts
         [Parameter(Mandatory=$true)]$user,
         [Parameter(Mandatory=$false)]$password,
         [Parameter(Mandatory=$false)][switch]$includeHosts,
-        [Parameter(Mandatory=$false)][switch]$unique
+        [Parameter(Mandatory=$false)][switch]$all
     )
     Begin
     {
@@ -53,17 +53,26 @@ function Get-VCSACerts
     
             If($password -eq $null)
             {
-                $securePassword = Read-Host -Prompt "Enter password for administrator account (ie: administrator@vsphere.local)" -AsSecureString
+                $securePassword = Read-Host -Prompt "Enter password for administrator account" -AsSecureString
             }
             Else
             {
                 $securePassword = ConvertTo-SecureString -String $password -AsPlainText -Force
+                Clear-Variable password
             }
+    
+            #create credentials for rest api
+            $restAuth = $user + ":" + $([System.Runtime.InteropServices.Marshal]::PtrToStringAuto([System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)))
+            $encoded = [System.Text.Encoding]::UTF8.GetBytes($restAuth)
+            $encoded=[System.Text.Encoding]::UTF8.GetBytes($restAuth)
+            $encodedAuth=[System.Convert]::ToBase64String($encoded)
+            $headersAuth = @{"Authorization"="Basic $($encodedAuth)"}
+            #create credentials for ldap auth
             $ldapCreds = New-Object System.Management.Automation.PSCredential -ArgumentList $userDN, $securePassword -ErrorAction Stop
         }
         Catch
         {
-            Throw "Error creating credentials for LDAP: $($_.Exception.Message)"
+            Throw "Error creating authentication: $($_.Exception.Message)"
         }
         $certificates = @()
     } #end Begin
@@ -72,7 +81,56 @@ function Get-VCSACerts
     {
         foreach($vcenter in $vcenters)
         {
+            #query vCenter rest api for machine_cert
+            $uriAuth = "https://$vcenter/rest/com/vmware/cis/session"
+            $uriTls = "https://$vcenter/rest/vcenter/certificate-management/vcenter/tls"
+            try 
+            {
+                $sessionId = (Invoke-RestMethod -Uri $uriAuth -Method Post -Headers $headersAuth -SkipCertificateCheck -ErrorAction Stop).Value
+                $tlsHeaders = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                $tlsHeaders.Add("vmware-api-session-id", "$sessionId")
+                $machineCert = (Invoke-RestMethod -Uri $uriTls -Method Get -Headers $tlsHeaders -SkipCertificateCheck -ErrorAction Stop).Value
+                Write-Verbose "Successfully queried $vcenter API"
+            }
+            #catch to skip certificate errors in Powershell 5.x
+            Catch [System.Management.Automation.RuntimeException]
+            {
+                add-type @"
+                using System.Net;
+                using System.Security.Cryptography.X509Certificates;
+                public class TrustAllCertsPolicy : ICertificatePolicy {
+                    public bool CheckValidationResult(
+                        ServicePoint srvPoint, X509Certificate certificate,
+                        WebRequest request, int certificateProblem) {
+                        return true;
+                    }
+                }
+"@
+                [System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+                $sessionId = (Invoke-RestMethod -Uri $uriAuth -Method Post -Headers $headersAuth -ErrorAction Stop).Value
+                $tlsHeaders = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+                $tlsHeaders.Add("vmware-api-session-id", "$sessionId")
+                $machineCert = (Invoke-RestMethod -Uri $uriTls -Method Get -Headers $tlsHeaders -ErrorAction Stop).Value
+                Write-Verbose "Successfully queried $vcenter API 5"
+            }
+            Catch
+            {
+                Throw "Error querying $vcenter API: $($_.Exception.Message)"
+            }
+            Finally
+            {
+                $certificate = "" | Select vCenter,Type,Subject,ValidFrom,ValidTo,Issuer,Thumbprint
+                $certificate.vCenter = $vcenter
+                $certificate.Type = "MACHINE_CERT"
+                $certificate.Subject = (($machineCert.subject_dn).Split(",")[-1]).Split("=")[-1]
+                $certificate.ValidFrom = $machineCert.valid_from
+                $certificate.ValidTo = $machineCert.valid_to
+                $certificate.Issuer = $machineCert.issuer_dn
+                $certificate.Thumbprint = $machineCert.thumbprint
+                $certificates += $certificate
+            }
 
+            #retrieve certificate information from ldap
             [System.Reflection.Assembly]::LoadWithPartialName("System.DirectoryServices.Protocols") | Out-Null
             $ldapConnect = New-Object System.DirectoryServices.Protocols.LdapConnection $vcenter
             $ldapConnect.SessionOptions.SecureSocketLayer = $false
@@ -91,8 +149,8 @@ function Get-VCSACerts
                 Throw "Error binding to LDAP on $vcenter : $($_.Exception.Message)"
             }
 
-            $scope = [System.DirectoryServices.Protocols.SearchScope]::Subtree
             $query = New-Object System.DirectoryServices.Protocols.SearchRequest 
+            $query.Scope = [System.DirectoryServices.Protocols.SearchScope]::Subtree
             $query.DistinguishedName = $baseDN
             $query.Filter = "(&(userCertificate=*)(!(objectClass=STSTenantTrustedCertificateChain)))"
             $query.Attributes.Add("userCertificate") | Out-Null
@@ -125,7 +183,6 @@ function Get-VCSACerts
                 }#end foreach objectClass
 
                 $serviceCerts = $service.Attributes['userCertificate']
-                Write-Verbose "Service $type has $($serviceCerts.Count) certificates"
                 foreach ($cert in $serviceCerts)
                 {
                     $certificate = "" | Select vCenter,Type,Subject,ValidFrom,ValidTo,Issuer,Thumbprint
@@ -140,11 +197,10 @@ function Get-VCSACerts
                     $certificates += $certificate
                 }#end foreach $cert
             }#end foreach service
-            #filter duplicate certs sort by Type
-            If ($unique -eq $true)
+            #filter out STSRelyingParty Certs
+            If ($all -ne $true)
             {
-                Write-Verbose "Filtering for unique certificates"
-                $certificates = $certificates | Sort-Object -Property Type | Sort-Object -Property Thumbprint -Unique
+                $certificates = $certificates | Where{$_.Type -ne "STSRelyingParty" -and $_.Type -ne "STSTenantTrustedCertificateChain"} | Sort-Object -Property Type
             }
             
             #gets host certificates if -includeHosts is specified
@@ -208,7 +264,6 @@ function Get-VCSACerts
         Remove-Variable ldapConnect
         Remove-Variable securePassword
         Remove-Variable ldapCreds
-        $certificates = $certificates | Sort-Object -Property Type -Descending
         Return $certificates
     }
 }
