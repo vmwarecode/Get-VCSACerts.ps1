@@ -1,8 +1,8 @@
 <#
     .NOTES
         Author: Mark McGill, VMware
-        Last Edit: 5-4-2021
-        Version 1.3
+        Last Edit: 5/6/2022
+        Version 1.4
     .SYNOPSIS
         Returns vCenter certificate information for all VCSA certificates, and optionally returns host certs
     .DESCRIPTION
@@ -21,7 +21,7 @@
     .PARAMETER includeHosts
         Using this flag will retrieve certs from each host associated with the vCenter(s)
     .PARAMETER all
-        Using this flag will "STSRelyingParty" and "STSTenantTrustedCertificateChain" certificates, which are normally duplicates of already
+        Using this flag will return "STSRelyingParty" and "STSTenantTrustedCertificateChain" certificates, which are normally duplicates of already
             reported certificates
     .EXAMPLE
         #load function and run
@@ -278,7 +278,9 @@ function Get-VCSACerts
     {
         Remove-Variable ldapConnect
         Remove-Variable securePassword
-        Remove-Variable ldapCreds
+        Remove-Variable ldapCreds        
+        #Remove duplicate certificates - added for version 1.4
+        $certificates = $certificates | Sort-Object -Property Thumbprint -Unique
         Return $certificates
     }
 }
